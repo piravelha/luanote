@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Callable
 from lark import Lark, Token, Tree
 
 EXPAND_ALIASES = False
@@ -39,7 +39,7 @@ class TableType(Type):
             name: str,
             key: Type,
             value: Type,
-            fields: dict[str | int, Type] | None = None):
+            fields: dict[str | int, Callable[[], Type]] | None = None):
         super().__init__(name)
         self.key = key
         self.value = value
@@ -101,7 +101,7 @@ def apply(type: Type, subs: dict[str, Type]) -> Type:
         if type.fields is not None:
             fields = {}
             for k, v in type.fields.items():
-                fields[k] = apply(v, subs)
+                fields[k] = apply(v(), subs)
             return TableType("table", type.key, type.value, fields).from_type(type)
         key = apply(type.key, subs)
         value = apply(type.value, subs)
@@ -131,10 +131,11 @@ def unify(type_a: Type, type_b: Type) -> dict[str, Type]:
         return subs
     if isinstance(type_a, TableType) and isinstance(type_b, TableType):
         if type_a.fields is not None and type_b.fields is not None:
-            subs = {}
+            subs: dict[str, Type] = {}
             for k, a in type_a.fields.items():
                 b = type_b.fields[k]
-                subs.update(unify(a, b))
+                new: dict[str, Type] = unify(a(), b())
+                subs.update(new)
             return subs
         subs = {}
         subs.update(unify(type_a.key, type_b.key))
@@ -171,8 +172,8 @@ def extends(type_a: Type, type_b: Type) -> bool:
         if type_a.fields is not None and type_b.fields is not None:
             for key, value in type_b.fields.items():
                 if key not in type_a.fields:
-                    return extends(Type("nil"), value)
-                if not extends(type_a.fields[key], value):
+                    return extends(Type("nil"), value())
+                if not extends(type_a.fields[key](), value()):
                     return False
             return True
         if not extends(type_a.key, type_b.key):
@@ -325,7 +326,7 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
         if isinstance(table, TableType):
             if table.fields is not None:
                 if prop in table.fields:
-                    return table.fields[prop]
+                    return table.fields[prop]()
                 raise ValueError(f"{prop_loc} Table '{table}' does not contain property '{prop}'")
             if table.key.name == "string":
                 return table.value
@@ -433,7 +434,8 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
         fields = {}
         for field in tree.children:
             name, type = field.children
-            fields[str(name)] = infer(type, env, typeenv)
+            cur = type
+            fields[str(name)] = lambda: infer(cur, env, typeenv)
         return TableType("table", Type("string"), Type("any"), fields)
     if tree.data == "alias_type":
         name, generics, type = tree.children
@@ -448,7 +450,7 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
     if tree.data == "record_type":
         name, *fields = tree.children
         fields: Any = {
-            str(field.children[0]): infer(field.children[1], env, typeenv) 
+            str(field.children[0]): lambda: infer(field.children[1], env, typeenv) 
             for field in fields
         }
         type = TableType("table", Type("string"), Type("any"), fields)
