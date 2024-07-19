@@ -53,7 +53,7 @@ chunk: stmt* last_stmt?
      | alias_type
      | record_type
 
-assign_stmt: var_list "=" expr_list
+assign_stmt: var "=" expr
 
 do_stmt: "do" block "end"
 

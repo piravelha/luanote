@@ -156,6 +156,8 @@ def extends(type_a: Type, type_b: Type) -> bool:
         return True
     if type_b.name == "any":
         return True
+    if type_a.name == "never":
+        return True
     if isinstance(type_a, UnionType):
         for x in type_a.values:
             if not extends(x, type_b):
@@ -198,6 +200,39 @@ def loc(tree: Tree | Token) -> str:
         return f"test.lua:{tree.line}:{tree.column}:"
     if tree.meta.empty: return "???:?:?:"
     return f"test.lua:{tree.meta.start_pos}:{tree.meta.column}:"
+
+
+def get_index_path(expr: Tree, env: dict[str, Type], typeenv) -> Type:
+    def get_base(expr: Tree | Token):
+        if isinstance(expr, Token):
+            return expr.value
+        base, _ = expr.children
+        return get_base(base)
+    base = env[get_base(expr)]
+    def run(expr: Tree, path: Any) -> Any:
+        if isinstance(expr, Token):
+            return path
+        if expr.data == "index_expr":
+            tbl, key = expr.children
+            path = run(tbl, path)
+            key = infer(key, env, typeenv)
+            type = TableType("table", key, Type("any"))
+            if not extends(path, type):
+                assert False
+            return run(tbl, path.value)
+        if expr.data == "prop_expr":
+            tbl, prop = expr.children
+            path = run(tbl, path)
+            if path.fields is not None:
+                if not path.fields.get(str(prop)):
+                    assert False
+                return path.fields[str(prop)]()
+            type = TableType("table", Type("string"), Type("any"))
+            if not extends(path, type):
+                assert False
+            return path.value
+        assert False
+    return run(expr, base)
 
 def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str, Type] = {}) -> Type:
     if isinstance(tree, Token):
@@ -289,7 +324,7 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
                     value_type = value
                 if not extends(value, value_type) and not extends(value_type, value):
                     different_values = True
-                fields[key] = value
+                fields[str(key)] = lambda: value
                 continue
             field = infer(field, env, typeenv)
             fields[index] = field
@@ -300,6 +335,8 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
                 raise ValueError(f"{loc(tree)} Table contains keys of different types: '{key_type}' and '{key}'")
             if different_values:
                 raise ValueError(f"{loc(tree)} Table contains values of different types: '{value_type}' and '{value}'")
+            if not new_array:
+                return TableType("table", Type("never"), Type("never"))
             first = new_array[0]
             for field in new_array:
                 if not extends(field, first) and not extends(first, field):
@@ -332,6 +369,14 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
                 return table.value
             raise ValueError(f"{prop_loc} Invalid property type '{prop}' for table with value type '{table.value}'")
         raise ValueError(f"{prop_loc} Attempting to access a property of a non-table type: '{table}'")
+    if tree.data == "assign_stmt":
+        prefix, value = tree.children
+        value_loc = loc(value)
+        type = get_index_path(prefix, env, typeenv)
+        value = infer(value, env, typeenv)
+        if not extends(value, type):
+            raise ValueError(f"{value_loc} Attempting to assign a value of type '{value}' to a variable of type '{type}'")
+        return Type("nil")
     if tree.data == "func_call":
         prefix, args = tree.children
         prefix_loc = loc(prefix)
