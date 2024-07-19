@@ -1,14 +1,10 @@
 
--- @generic T
--- @params object: { values: T[] }
-function get(object)
-  return object.values
+-- @generic T : string | number
+-- @params x : T
+function f(x)
+    return x
 end
 
-local obj = {
-  values = {1, 2, 3},
-}
-
-local xs = get(obj)
-return xs -- integer[]
-
+local x = f(1)
+local y = f("hello")
+local z = f(true) -- Expect error

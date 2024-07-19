@@ -1,3 +1,4 @@
+from re import A
 from typing import Any, Callable
 from lark import Lark, Token, Tree
 
@@ -9,12 +10,12 @@ with open("grammar.lark") as f:
 parser = Lark(grammar)
 
 class Type:
-    def __init__(self, name: str, generics: list[str] = []):
+    def __init__(self, name: str, generics: 'list[Type]' = []):
         self.name = name
         self.alias = None
         self.generics = generics
         self.args = []
-    def set_alias(self, alias: str, generics: list[str]):
+    def set_alias(self, alias: str, generics: 'list[Type]'):
         self.generics = generics
         self.alias = alias
     def from_type(self, type: 'Type'):
@@ -54,7 +55,7 @@ class TableType(Type):
         if self.key.name == "integer":
             return f"{self.value}[]"
         if self.fields and len(self.fields) > 0:
-            return f"{{ {', '.join(f'{k}: {v}' for k, v in self.fields.items())} }}"
+            return f"{{ {', '.join(f'{k}: {v()}' for k, v in self.fields.items())} }}"
         return f"{{ [{self.key}]: {self.value} }}"
 
 class FunctionType(Type):
@@ -82,14 +83,17 @@ class UnionType(Type):
 
 class GenericType(Type):
     _iota = 0
-    def __init__(self, gname: str):
+    def __init__(self, gname: str, constraint: Type = Type("any")):
         super().__init__("generic")
         self.gname = gname
+        self.gconstraint = constraint
         self.iota = GenericType._iota
         GenericType._iota += 1
     def copy(self):
         return GenericType(self.gname)
     def __repr__(self):
+        if self.gconstraint.name != "any":
+            return f"{self.gname} : {self.gconstraint}"
         return f"{self.gname}"
 
 _LUAENV: dict[str, Type] = {
@@ -98,10 +102,17 @@ _LUAENV: dict[str, Type] = {
 }
 
 def apply(type: Type, subs: dict[str, Type]) -> Type:
+    old = type
+    args = []
+    for a in type.args:
+        args.append(apply(a, subs))
+    new = type.copy().from_type(type)
+    new.args = args
+    type = new
     if isinstance(type, GenericType):
         if subs.get(type.gname):
             return subs[type.gname]
-        return type
+        return old
     if isinstance(type, UnionType):
         new = []
         for x in type.values:
@@ -121,41 +132,37 @@ def apply(type: Type, subs: dict[str, Type]) -> Type:
         for p in type.params:
             params.append(apply(p, subs))
         return FunctionType("function", params, apply(type.returns, subs)).from_type(type)
-    args = []
-    for a in type.args:
-        args.append(apply(a, subs))
-    new = Type(type.name, type.generics)
-    new.alias = type.alias
-    new.args = args
-    return new
+    return type
 
-def unify(type_a: Type, type_b: Type) -> dict[str, Type]:
+def unify(type_a: Type, type_b: Type, loc: str = "???:?:?") -> dict[str, Type]:
     if isinstance(type_b, GenericType):
+        if not extends(type_a, type_b.gconstraint):
+            raise ValueError(f"{loc} Generic argument '{type_a}' does not follow its generic constraint '{type_b}'")
         return {
             type_b.gname: type_a
         }
     if isinstance(type_a, UnionType) and isinstance(type_b, UnionType):
         subs = {}
         for a, b in zip(type_a.values, type_b.values):
-            subs.update(unify(a, b))
+            subs.update(unify(a, b, loc))
         return subs
     if isinstance(type_a, TableType) and isinstance(type_b, TableType):
         if type_a.fields is not None and type_b.fields is not None:
             subs: dict[str, Type] = {}
             for k, a in type_a.fields.items():
                 b = type_b.fields[k]
-                new: dict[str, Type] = unify(a(), b())
+                new: dict[str, Type] = unify(a(), b(), loc)
                 subs.update(new)
             return subs
         subs = {}
-        subs.update(unify(type_a.key, type_b.key))
-        subs.update(unify(type_a.value, type_b.value))
+        subs.update(unify(type_a.key, type_b.key, loc))
+        subs.update(unify(type_a.value, type_b.value, loc))
         return subs
     if isinstance(type_a, FunctionType) and isinstance(type_b, FunctionType):
         subs = {}
         for a, b in zip(type_a.params, type_b.params):
-            subs.update(unify(a, b))
-        subs.update(unify(type_a.returns, type_b.returns))
+            subs.update(unify(a, b, loc))
+        subs.update(unify(type_a.returns, type_b.returns, loc))
         return subs
     return {}
             
@@ -406,7 +413,7 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
             subs = {}
             for _, (arg, param) in enumerate(zip(args, prefix.params)):
                 param = apply(param, subs)
-                subs.update(unify(arg, param))
+                subs.update(unify(arg, param, prefix_loc))
                 if not extends(arg, param):
                     raise ValueError(f"{prefix_loc} Invalid argument type, expected '{param}' but got '{arg}'")
             return apply(prefix.returns, subs)
@@ -452,7 +459,13 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
         for param in type.children:
             if param.data == "generic_type_hint":
                 for p in param.children:
-                    new_typeenv[str(p)] = GenericType(str(p))
+                    if len(p.children) == 1:
+                        p = p.children[0]
+                        new_typeenv[str(p)] = GenericType(str(p), Type("any"))
+                        continue
+                    pname, constraint = p.children
+                    constraint = infer(constraint, env, new_typeenv)
+                    new_typeenv[str(pname)] = GenericType(str(pname), constraint)
                 continue
             if param.data == "return_type_hint":
                 expect_return = infer(param.children[0], env, new_typeenv)
@@ -499,12 +512,17 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
         return TableType("table", Type("string"), Type("any"), fields3)
     if tree.data == "alias_type":
         name, generics, type = tree.children
-        generics = [str(g) for g in generics.children]
         new_typeenv = typeenv.copy()
-        for g in generics:
-            new_typeenv[g] = GenericType(g)
+        for g in generics.children:
+            if len(g.children) == 1:
+                g = g.children[0]
+                new_typeenv[str(g)] = GenericType(str(g))
+                continue
+            g, constraint = g.children
+            constraint = infer(constraint, env, new_typeenv)
+            new_typeenv[str(g)] = GenericType(str(g), constraint)
         type = infer(type, env, new_typeenv)
-        type.set_alias(str(name), generics)
+        type.set_alias(str(name), [new_typeenv[str(g.children[0])] for g in generics.children])
         typeenv[str(name)] = type
         return type
     if tree.data == "record_type":
@@ -526,12 +544,18 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
         return infer(tree.children[0], env, typeenv)
     if tree.data == "generic_type":
         name, *args = tree.children
+        name_loc = loc(name)
         args = [infer(a, env, typeenv) for a in args]
         type = typeenv[str(name)]
         assert len(args) == len(type.generics)
         subs = {}
+        i = 0
         for g, arg in zip(type.generics, args):
-            subs[g] = arg
+            assert isinstance(g, GenericType)
+            if not extends(arg, g.gconstraint):
+                raise ValueError(f"{name_loc} Generic argument '{arg}' does not follow its generic constraint '{g}'")
+            subs[str(g.gname)] = arg
+            i += 1
         type = apply(type, subs)
         type.args = args
         return type

@@ -21,13 +21,14 @@ generic_type: NAME "<" type ("," type)* ">"
 
 alias_type: "--" "@alias" NAME generic_param_list "=" type
           | "--[[" "@alias" NAME generic_param_list "=" type "]]"
-generic_param_list: "<" (NAME ("," NAME)*)? ">" | empty
+generic_param_list: "<" (generic_param ("," generic_param)*)? ">" | empty
 empty:
 
 record_type: "--" "@record" NAME field_list_type*
 field_list_type: "--" "@field" NAME ":" type
 
-generic_type_hint: "--" "@generic" NAME
+generic_type_hint: "--" "@generic" generic_param ("," generic_param)*
+generic_param: NAME (":" type)?
 return_type_hint: "--" "@return" type
 param_types: generic_type_hint? "--" "@params" (param_type ("," param_type)*)? ","? return_type_hint?
 param_type: NAME ":" type
@@ -139,7 +140,7 @@ obj_field: NAME "=" expr
 
 ?atom: var
      | NIL
-     | BOOL
+     | BOOLEAN
      | STRING
      | NUMBER
      | INTEGER
@@ -147,7 +148,7 @@ obj_field: NAME "=" expr
      | prefix_expr
 
 TYPE_NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
-PRIMITIVE_TYPE: /integer|boolean|number|string|nil/
+PRIMITIVE_TYPE: /integer|BOOLEANean|number|string|nil/
 
 ELLIPSIS: /\.\.\./
 
@@ -161,7 +162,7 @@ UNARY_OP: /-|#|not/
 
 NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
 NIL: /nil/
-BOOL: /true|false/
+BOOLEAN: /true|false/
 STRING: /"([^"\\]|\\.)*"/
 NUMBER: /(\d+)?(\.\d+)/
 INTEGER: /\d+/
