@@ -1,0 +1,158 @@
+// Lua 5.1 grammar
+
+?start: chunk
+
+?type: PRIMITIVE_TYPE
+     | TYPE_NAME
+     | array_type
+     | dict_type
+     | obj_type
+
+array_type: type "[" "]"
+dict_type: "{" "[" type "]" ":" type "}"
+obj_type: "{" obj_type_field ("," obj_type_field)* ","? "}"
+obj_type_field: NAME ":" type
+
+alias_type: "--" "@alias" NAME "=" type
+          | "--[[" "@alias" NAME "=" type "]]"
+
+record_type: "--" "@record" NAME field_list_type*
+field_list_type: "--" "@field" NAME ":" type
+
+param_types: "--" "@params" (param_type ("," param_type)*)? ","?
+param_type: NAME ":" type
+
+chunk: stmt* last_stmt?
+
+?block: chunk
+
+?stmt: block
+     | var_decl
+     | assign_stmt
+     | do_stmt
+     | while_stmt
+     | repeat_stmt
+     | if_stmt
+     | range_for_stmt
+     | generic_for_stmt
+     | func_decl
+     | last_stmt
+     | break_stmt
+     | func_call
+     | alias_type
+     | record_type
+
+assign_stmt: var_list "=" expr_list
+
+do_stmt: "do" block "end"
+
+while_stmt: "while" expr "do" block "end"
+
+repeat_stmt: "repeat" block "until" expr
+
+if_stmt: "if" expr "then" block elseif_branch* else_branch? "end"
+elseif_branch: "elseif" expr "then" block
+else_branch: "else" block
+
+range_for_stmt: "for" NAME "=" expr "," expr ("," expr)? "do" block "end"
+generic_for_stmt: "for" name_list "in" expr_list "do" block "end"
+
+func_decl: param_types "function" func_name func_body
+
+var_decl: "local" var_list "=" expr_list
+
+?last_stmt: return_stmt
+          | break_stmt
+
+break_stmt: "break"
+
+return_stmt: "return" expr_list?
+
+func_name: NAME ("." NAME)* (":" NAME)?
+
+var_list: var ("," var)*
+
+?var: NAME
+    | index_expr
+    | prop_expr
+
+?expr: log_expr
+     | ELLIPSIS
+     | func_expr
+     | prefix_expr
+     | atom
+
+expr_list: expr ("," expr)*
+
+index_expr: prefix_expr "[" expr "]"
+prop_expr: prefix_expr "." NAME
+
+?prefix_expr: var
+            | func_call
+            | method_call
+            | "(" expr ")"
+
+method_call: prefix_expr ":" NAME args
+func_call: prefix_expr args
+
+?args: "(" expr_list? ")"
+     | table
+     | STRING
+
+func_expr: "function" func_body
+
+func_body: "(" param_list? ")" block "end"
+
+param_list: name_list ("," ELLIPSIS)?
+          | ELLIPSIS
+
+name_list: NAME ("," NAME)*
+
+table: "{" field_list? "}"
+
+field_list: field (("," | ";") field)* ("," | ";")?
+
+?field: dict_field
+      | obj_field
+      | expr
+dict_field: "[" expr "]" "=" expr
+obj_field: NAME "=" expr
+
+?log_expr: rel_expr LOG_OP log_expr | rel_expr
+?rel_expr: add_expr REL_OP rel_expr | add_expr
+?add_expr: mul_expr ADD_OP add_expr | mul_expr
+?mul_expr: exp_expr MUL_OP mul_expr | exp_expr
+?exp_expr: unary_expr EXP_OP exp_expr | unary_expr
+?unary_expr: UNARY_OP unary_expr | atom
+
+?atom: var
+     | NIL
+     | BOOL
+     | STRING
+     | NUMBER
+     | INTEGER
+     | table
+     | prefix_expr
+
+TYPE_NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
+PRIMITIVE_TYPE: /integer|boolean|number|string|nil/
+
+ELLIPSIS: /\.\.\./
+
+LOG_OP: /and|or/
+EQ_OP: /==|~=/
+REL_OP: /<=|>=|<|>/
+ADD_OP: /\+|-|\.\./
+MUL_OP: /\*|\/|%/
+EXP_OP: /\^/
+UNARY_OP: /-|#|not/
+
+NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
+NIL: /nil/
+BOOL: /true|false/
+STRING: /"([^"\\]|\\.)*"/
+NUMBER: /(\d+)?(\.\d+)/
+INTEGER: /\d+/
+
+%ignore /\s+/
+%ignore /--(?!\s*(@(params|alias|record|field))).*/
