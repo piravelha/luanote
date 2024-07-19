@@ -1,12 +1,14 @@
 
+-- @generic T
+-- @params object: { values: T[] }
+function get(object)
+  return object.values
+end
+
 local obj = {
-  deep = {
-    deeper = {
-      x = 5,
-      s = "hello",
-    },
-  },
+  values = {1, 2, 3},
 }
 
-obj.deep.deeper.x = "invalid"
-obj.deep.deeper.s = "world"
+local xs = get(obj)
+return xs -- integer[]
+

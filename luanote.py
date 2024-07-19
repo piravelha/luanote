@@ -111,7 +111,7 @@ def apply(type: Type, subs: dict[str, Type]) -> Type:
         if type.fields is not None:
             fields = {}
             for k, v in type.fields.items():
-                fields[k] = apply(v(), subs)
+                fields[k] = lambda: apply(v(), subs)
             return TableType("table", type.key, type.value, fields).from_type(type)
         key = apply(type.key, subs)
         value = apply(type.value, subs)
@@ -489,12 +489,14 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
     if tree.data == "dict_type":
         return TableType("table", infer(tree.children[0], env, typeenv), infer(tree.children[1], env, typeenv))
     if tree.data == "obj_type":
-        fields = {}
-        for field in tree.children:
+        fields3 = {}
+        def run(field):
+            nonlocal fields3
             name, type = field.children
-            cur = type.copy()
-            fields[str(name)] = lambda: infer(cur, env, typeenv)
-        return TableType("table", Type("string"), Type("any"), fields)
+            fields3[str(name)] = lambda: infer(type, env, typeenv)
+        for field in tree.children:
+            run(field)
+        return TableType("table", Type("string"), Type("any"), fields3)
     if tree.data == "alias_type":
         name, generics, type = tree.children
         generics = [str(g) for g in generics.children]

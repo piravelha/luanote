@@ -20,6 +20,7 @@ obj_type_field: NAME ":" type
 generic_type: NAME "<" type ("," type)* ">"
 
 alias_type: "--" "@alias" NAME generic_param_list "=" type
+          | "--[[" "@alias" NAME generic_param_list "=" type "]]"
 generic_param_list: "<" (NAME ("," NAME)*)? ">" | empty
 empty:
 
