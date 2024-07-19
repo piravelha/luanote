@@ -7,6 +7,9 @@
      | array_type
      | dict_type
      | obj_type
+     | union_type
+
+type_hint: "--" "@type" type
 
 array_type: type "[" "]"
 dict_type: "{" "[" type "]" ":" type "}"
@@ -21,6 +24,8 @@ field_list_type: "--" "@field" NAME ":" type
 
 param_types: "--" "@params" (param_type ("," param_type)*)? ","?
 param_type: NAME ":" type
+
+union_type: type "|" type
 
 chunk: stmt* last_stmt?
 
@@ -59,7 +64,7 @@ generic_for_stmt: "for" name_list "in" expr_list "do" block "end"
 
 func_decl: param_types "function" func_name func_body
 
-var_decl: "local" var_list "=" expr_list
+var_decl: type_hint? "local" var_list "=" expr_list
 
 ?last_stmt: return_stmt
           | break_stmt
@@ -155,4 +160,4 @@ NUMBER: /(\d+)?(\.\d+)/
 INTEGER: /\d+/
 
 %ignore /\s+/
-%ignore /--(?!\s*(@(params|alias|record|field))).*/
+%ignore /--(?!\s*(@(params|alias|record|field|type))).*/

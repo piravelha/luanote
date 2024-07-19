@@ -1,12 +1,9 @@
 
--- @record Person
--- @field name: string
--- @field age: number
+-- @record Name
+-- @field first: string
+-- @field last: string
 
--- @params p: Person
-function getName(p)
-    return p.name
-end
-
-local alice = { name = "Alice", age = 30 }
-return getName(alice)
+-- @type Name
+local str = {
+  first = "Ian",
+}

@@ -43,6 +43,13 @@ class FunctionType(Type):
         if self.alias: return self.alias
         return f"({', '.join(map(str, self.params))}) -> {self.returns}"
 
+class UnionType(Type):
+    def __init__(self, name: str, *values: Type):
+        super().__init__(name)
+        self.values = values
+    def __repr__(self):
+        return " | ".join([repr(v) for v in self.values])
+
 _LUAENV: dict[str, Type] = {
     "print": FunctionType("function", [Type("any")], Type("nil")),
     "tostring": FunctionType("function", [Type("any")], Type("string")),
@@ -51,14 +58,24 @@ _LUAENV: dict[str, Type] = {
 def extends(type_a: Type, type_b: Type) -> bool:
     if type_b.name == "any":
         return True
+    if isinstance(type_a, UnionType):
+        for x in type_a.values:
+            if not extends(x, type_b):
+                return False
+        return True
+    if isinstance(type_b, UnionType):
+        for x in type_b.values:
+            if extends(type_a, x):
+                return True
+        return False
     if type_a.name == "integer" and type_b.name == "number":
         return True
     if isinstance(type_a, TableType) and isinstance(type_b, TableType):
         if type_a.fields is not None and type_b.fields is not None:
-            for key, value in type_a.fields.items():
-                if key not in type_b.fields:
-                    return False
-                if not extends(value, type_b.fields[key]):
+            for key, value in type_b.fields.items():
+                if key not in type_a.fields:
+                    return extends(Type("nil"), value)
+                if not extends(type_a.fields[key], value):
                     return False
             return True
         if not extends(type_a.key, type_b.key):
@@ -158,6 +175,8 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
         different_values = False
         key_type = None
         value_type = None
+        key = None
+        value = None
         for field in field_list.children:
             if isinstance(field, Tree) and len(field.children) == 2:
                 is_array = False
@@ -231,7 +250,7 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
         if isinstance(prefix, FunctionType):
             if len(args) != len(prefix.params):
                 raise ValueError(f"{prefix_loc} Invalid number of arguments")
-            for i, (arg, param) in enumerate(zip(args, prefix.params)):
+            for _, (arg, param) in enumerate(zip(args, prefix.params)):
                 if not extends(arg, param):
                     raise ValueError(f"{prefix_loc} Invalid argument type, expected '{param}' but got '{arg}'")
             return prefix.returns
@@ -249,9 +268,20 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
     if tree.data == "func_expr":
         return infer(tree.children[0], env)
     if tree.data == "var_decl":
+        # TODO: support multiple var decls together
+        if len(tree.children) == 3:
+            type, varlist, exprlist = tree.children
+            type = infer(type, env)
+            var, expr = varlist.children[0], exprlist.children[0]
+            var_loc = loc(var)
+            expr = infer(expr, env)
+            if not extends(expr, type):
+                raise ValueError(f"{var_loc} Variable does not match its declared type, expected '{type}', got {expr}'")
+            env[str(var)] = type
+            return Type("nil")
         varlist, exprlist = tree.children
-        for var, expr in zip(varlist.children, exprlist.children):
-            env[str(var)] = infer(expr, env)
+        var, expr = varlist.children[0], exprlist.children[0]
+        env[str(var)] = infer(expr, env)
         return Type("nil")
     if tree.data == "func_decl":
         # TODO: add support for variadic functions
@@ -307,6 +337,13 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
         type = TableType("table", Type("string"), Type("any"), fields)
         type_alias_env[str(name)] = type
         return type
+    if tree.data == "union_type":
+        left, right = tree.children
+        left = infer(left, env)
+        right = infer(right, env)
+        return UnionType("union", left, right)
+    if tree.data == "type_hint":
+        return infer(tree.children[0], env)
     assert False, f"Not implemented: {tree.data}"
 
 with open("test.lua") as f:
