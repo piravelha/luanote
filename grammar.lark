@@ -8,6 +8,7 @@
      | dict_type
      | obj_type
      | union_type
+     | generic_type
 
 type_hint: "--" "@type" type
 
@@ -16,13 +17,18 @@ dict_type: "{" "[" type "]" ":" type "}"
 obj_type: "{" obj_type_field ("," obj_type_field)* ","? "}"
 obj_type_field: NAME ":" type
 
-alias_type: "--" "@alias" NAME "=" type
-          | "--[[" "@alias" NAME "=" type "]]"
+generic_type: NAME "<" type ("," type)* ">"
+
+alias_type: "--" "@alias" NAME generic_param_list "=" type
+generic_param_list: "<" (NAME ("," NAME)*)? ">" | empty
+empty:
 
 record_type: "--" "@record" NAME field_list_type*
 field_list_type: "--" "@field" NAME ":" type
 
-param_types: "--" "@params" (param_type ("," param_type)*)? ","?
+generic_type_hint: "--" "@generic" NAME
+return_type_hint: "--" "@return" type
+param_types: generic_type_hint? "--" "@params" (param_type ("," param_type)*)? ","? return_type_hint?
 param_type: NAME ":" type
 
 union_type: type "|" type
@@ -160,4 +166,4 @@ NUMBER: /(\d+)?(\.\d+)/
 INTEGER: /\d+/
 
 %ignore /\s+/
-%ignore /--(?!\s*(@(params|alias|record|field|type))).*/
+%ignore /--(?!\s*(@(params|alias|record|field|type|return))).*/

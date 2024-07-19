@@ -1,19 +1,37 @@
 from typing import Any
 from lark import Lark, Token, Tree
 
+EXPAND_ALIASES = False
+
 with open("grammar.lark") as f:
     grammar = f.read()
 
 parser = Lark(grammar)
 
 class Type:
-    def __init__(self, name: str):
+    def __init__(self, name: str, generics: list[str] = []):
         self.name = name
         self.alias = None
-    def set_alias(self, alias: str):
+        self.generics = generics
+        self.args = []
+    def set_alias(self, alias: str, generics: list[str]):
+        self.generics = generics
         self.alias = alias
+    def from_type(self, type: 'Type'):
+        self.alias = type.alias
+        self.args = type.args
+        return self
+    def alias_repr(self):
+        if self.args:
+            args = ", ".join([repr(a) for a in self.args])
+            return f"{self.alias}<{args}>"
+        return self.alias or ""
     def __repr__(self):
-        if self.alias: return self.alias
+        if self.alias and not EXPAND_ALIASES:
+            return self.alias_repr()
+        if self.generics:
+            gens = ", ".join([repr(g) for g in self.generics])
+            return f"{self.name}<{gens}>"
         return self.name
 
 class TableType(Type):
@@ -27,7 +45,8 @@ class TableType(Type):
         self.value = value
         self.fields = fields
     def __repr__(self):
-        if self.alias: return self.alias
+        if self.alias and not EXPAND_ALIASES:
+            return self.alias_repr()
         if self.key.name == "integer":
             return f"{self.value}[]"
         if self.fields and len(self.fields) > 0:
@@ -40,7 +59,8 @@ class FunctionType(Type):
         self.params = params
         self.returns = returns
     def __repr__(self):
-        if self.alias: return self.alias
+        if self.alias and not EXPAND_ALIASES:
+            return self.alias_repr()
         return f"({', '.join(map(str, self.params))}) -> {self.returns}"
 
 class UnionType(Type):
@@ -48,14 +68,91 @@ class UnionType(Type):
         super().__init__(name)
         self.values = values
     def __repr__(self):
+        if self.alias and not EXPAND_ALIASES:
+            return self.alias_repr()
         return " | ".join([repr(v) for v in self.values])
+
+class GenericType(Type):
+    _iota = 0
+    def __init__(self, gname: str):
+        super().__init__("generic")
+        self.gname = gname
+        self.iota = GenericType._iota
+        GenericType._iota += 1
+    def __repr__(self):
+        return f"{self.gname}"
 
 _LUAENV: dict[str, Type] = {
     "print": FunctionType("function", [Type("any")], Type("nil")),
     "tostring": FunctionType("function", [Type("any")], Type("string")),
 }
 
+def apply(type: Type, subs: dict[str, Type]) -> Type:
+    if isinstance(type, GenericType):
+        if subs.get(type.gname):
+            return subs[type.gname]
+        return type
+    if isinstance(type, UnionType):
+        new = []
+        for x in type.values:
+            new.append(apply(x, subs))
+        return UnionType("union", *new).from_type(type)
+    if isinstance(type, TableType):
+        if type.fields is not None:
+            fields = {}
+            for k, v in type.fields.items():
+                fields[k] = apply(v, subs)
+            return TableType("table", type.key, type.value, fields).from_type(type)
+        key = apply(type.key, subs)
+        value = apply(type.value, subs)
+        return TableType("table", key, value).from_type(type)
+    if isinstance(type, FunctionType):
+        params = []
+        for p in type.params:
+            params.append(apply(p, subs))
+        return FunctionType("function", params, apply(type.returns, subs)).from_type(type)
+    args = []
+    for a in type.args:
+        args.append(apply(a, subs))
+    new = Type(type.name, type.generics)
+    new.alias = type.alias
+    new.args = args
+    return new
+
+def unify(type_a: Type, type_b: Type) -> dict[str, Type]:
+    if isinstance(type_b, GenericType):
+        return {
+            type_b.gname: type_a
+        }
+    if isinstance(type_a, UnionType) and isinstance(type_b, UnionType):
+        subs = {}
+        for a, b in zip(type_a.values, type_b.values):
+            subs.update(unify(a, b))
+        return subs
+    if isinstance(type_a, TableType) and isinstance(type_b, TableType):
+        if type_a.fields is not None and type_b.fields is not None:
+            subs = {}
+            for k, a in type_a.fields.items():
+                b = type_b.fields[k]
+                subs.update(unify(a, b))
+            return subs
+        subs = {}
+        subs.update(unify(type_a.key, type_b.key))
+        subs.update(unify(type_a.value, type_b.value))
+        return subs
+    if isinstance(type_a, FunctionType) and isinstance(type_b, FunctionType):
+        subs = {}
+        for a, b in zip(type_a.params, type_b.params):
+            subs.update(unify(a, b))
+        subs.update(unify(type_a.returns, type_b.returns))
+        return subs
+    return {}
+            
+    
+
 def extends(type_a: Type, type_b: Type) -> bool:
+    if type_b.name == "generic":
+        return True
     if type_b.name == "any":
         return True
     if isinstance(type_a, UnionType):
@@ -101,10 +198,7 @@ def loc(tree: Tree | Token) -> str:
     if tree.meta.empty: return "???:?:?:"
     return f"test.lua:{tree.meta.start_pos}:{tree.meta.column}:"
 
-type_alias_env: dict[str, Type] = {}
-
-def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
-    global type_alias_env
+def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str, Type] = {}) -> Type:
     if isinstance(tree, Token):
         if tree.type == "NUMBER":
             return Type("number")
@@ -121,11 +215,11 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
         if tree.type == "PRIMITIVE_TYPE":
             return Type(tree.value)
         if tree.type == "TYPE_NAME":
-            return type_alias_env[tree.value]
+            return typeenv[tree.value]
         assert False, f"Not implemented: {tree.type}"
     if tree.data == "unary_expr":
         op, value = tree.children
-        value = infer(value, env)
+        value = infer(value, env, typeenv)
         if op == "-":
             if value.name == "number":
                 return Type("number")
@@ -141,8 +235,8 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
     if tree.data in ["exp_expr", "mul_expr", "add_expr", "rel_expr", "eq_expr", "log_expr"]:
         left, op, right = tree.children
         op_loc = loc(op)
-        left = infer(left, env)
-        right = infer(right, env)
+        left = infer(left, env, typeenv)
+        right = infer(right, env, typeenv)
         if op in ["+", "-", "*", "/", "^"]:
             if left.name in ["number", "integer"] and right.name in ["number", "integer"]:
                 if left.name == "number" or right.name == "number":
@@ -182,21 +276,21 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
                 is_array = False
                 key, value = field.children
                 if isinstance(key, Tree):
-                    cur_key_type = infer(key, env)
+                    cur_key_type = infer(key, env, typeenv)
                 else:
                     cur_key_type = Type("string")
                 if key_type is None:
                     key_type = cur_key_type
                 if not extends(cur_key_type, key_type) and not extends(key_type, cur_key_type):
                     different_keys = True
-                value = infer(value, env)
+                value = infer(value, env, typeenv)
                 if value_type is None:
                     value_type = value
                 if not extends(value, value_type) and not extends(value_type, value):
                     different_values = True
                 fields[key] = value
                 continue
-            field = infer(field, env)
+            field = infer(field, env, typeenv)
             fields[index] = field
             new_array.append(field)
             index = index + 1
@@ -209,14 +303,14 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
             for field in new_array:
                 if not extends(field, first) and not extends(first, field):
                     raise ValueError(f"{loc(tree)} Array contains elements of different types: '{first}' and '{field}'")
-            return TableType("table", Type("integer"), first, fields)
+            return TableType("table", Type("integer"), first)
         assert key_type is not None and value_type is not None
         return TableType("table", key_type, value_type,  fields)
     if tree.data == "index_expr":
         table, index = tree.children
         index_loc = loc(index)
-        table = infer(table, env)
-        index = infer(index, env)
+        table = infer(table, env, typeenv)
+        index = infer(index, env, typeenv)
         if isinstance(table, TableType):
             if extends(index, table.key):
                 return table.value
@@ -225,7 +319,7 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
     if tree.data == "prop_expr":
         table, prop = tree.children
         prop_loc = loc(prop)
-        table = infer(table, env)
+        table = infer(table, env, typeenv)
         assert isinstance(prop, Token)
         prop = prop.value
         if isinstance(table, TableType):
@@ -240,20 +334,23 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
     if tree.data == "func_call":
         prefix, args = tree.children
         prefix_loc = loc(prefix)
-        prefix = infer(prefix, env)
+        prefix = infer(prefix, env, typeenv)
         if isinstance(args, Token):
-            args = [infer(args, env)]
+            args = [infer(args, env, typeenv)]
         elif args.data == "table":
-            args = [infer(args, env)]
+            args = [infer(args, env, typeenv)]
         else:
-            args = [infer(arg, env) for arg in args.children]
+            args = [infer(arg, env, typeenv) for arg in args.children]
         if isinstance(prefix, FunctionType):
             if len(args) != len(prefix.params):
                 raise ValueError(f"{prefix_loc} Invalid number of arguments")
+            subs = {}
             for _, (arg, param) in enumerate(zip(args, prefix.params)):
+                param = apply(param, subs)
+                subs.update(unify(arg, param))
                 if not extends(arg, param):
                     raise ValueError(f"{prefix_loc} Invalid argument type, expected '{param}' but got '{arg}'")
-            return prefix.returns
+            return apply(prefix.returns, subs)
         raise ValueError(f"{prefix_loc} Attempting to call a non-function type: '{prefix}'")
     if tree.data == "func_body":
         if len(tree.children) == 1:
@@ -264,48 +361,64 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
         new_env = env.copy()
         for param in params.children:
             new_env[str(param)] = Type("any")
-        return FunctionType("function", [Type("any") for _ in params.children], infer(body, new_env))
+        return FunctionType("function", [Type("any") for _ in params.children], infer(body, new_env, typeenv))
     if tree.data == "func_expr":
-        return infer(tree.children[0], env)
+        return infer(tree.children[0], env, typeenv)
     if tree.data == "var_decl":
         # TODO: support multiple var decls together
         if len(tree.children) == 3:
             type, varlist, exprlist = tree.children
-            type = infer(type, env)
+            type = infer(type, env, typeenv)
             var, expr = varlist.children[0], exprlist.children[0]
             var_loc = loc(var)
-            expr = infer(expr, env)
+            expr = infer(expr, env, typeenv)
             if not extends(expr, type):
                 raise ValueError(f"{var_loc} Variable does not match its declared type, expected '{type}', got {expr}'")
             env[str(var)] = type
             return Type("nil")
         varlist, exprlist = tree.children
         var, expr = varlist.children[0], exprlist.children[0]
-        env[str(var)] = infer(expr, env)
+        env[str(var)] = infer(expr, env, typeenv)
         return Type("nil")
     if tree.data == "func_decl":
         # TODO: add support for variadic functions
         type, name, body = tree.children
         new_env = env.copy()
+        new_typeenv = typeenv.copy()
         func_params, func_body = body.children
         func_params = func_params.children[0]
+        expect_return = None
         for param in func_params.children:
             new_env[str(param)] = Type("any")
         for param in type.children:
+            if param.data == "generic_type_hint":
+                for p in param.children:
+                    new_typeenv[str(p)] = GenericType(str(p))
+                continue
+            if param.data == "return_type_hint":
+                expect_return = infer(param.children[0], env, new_typeenv)
+                continue
+                
             pname, ptype = param.children
-            ptype = infer(ptype, env)
+            ptype = infer(ptype, env, new_typeenv)
             new_env[str(pname)] = ptype
         str_name = ""
         if len(name.children) == 1:
             str_name = name.children[0]
-            env[str(str_name)] = FunctionType("function", [
+            ret = infer(func_body, new_env, new_typeenv)
+            if expect_return is not None:
+                if not extends(ret, expect_return):
+                    raise ValueError(f"{loc(tree)} Return type differs from its annotation, expected '{expect_return}', but got '{ret}'")
+                ret = expect_return
+            type = FunctionType("function", [
                 new_env[str(param)] for param in func_params.children
-            ], infer(func_body, new_env))
-        return Type("nil")
+            ], ret)
+            env[str(str_name)] = type
+            return Type("nil")
     if tree.data == "chunk":
         new_env = env.copy()
         for statement in tree.children:
-            type = infer(statement, new_env)
+            type = infer(statement, new_env, typeenv)
             if statement.data == "return_stmt":
                 return type
         return Type("nil")        
@@ -313,37 +426,52 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV) -> Type:
         # TODO: allow multiple return types
         return infer(tree.children[0].children[0], env)
     if tree.data == "array_type":
-        return TableType("table", Type("integer"), infer(tree.children[0], env), {})
+        return TableType("table", Type("integer"), infer(tree.children[0], env, typeenv))
     if tree.data == "dict_type":
-        return TableType("table", infer(tree.children[0], env), infer(tree.children[1], env), {})
+        return TableType("table", infer(tree.children[0], env, typeenv), infer(tree.children[1], env, typeenv))
     if tree.data == "obj_type":
         fields = {}
         for field in tree.children:
             name, type = field.children
-            fields[str(name)] = infer(type, env)
+            fields[str(name)] = infer(type, env, typeenv)
         return TableType("table", Type("string"), Type("any"), fields)
     if tree.data == "alias_type":
-        name, type = tree.children
-        type = infer(type, env)
-        type.set_alias(str(name))
-        type_alias_env[str(name)] = type
+        name, generics, type = tree.children
+        generics = [str(g) for g in generics.children]
+        new_typeenv = typeenv.copy()
+        for g in generics:
+            new_typeenv[g] = GenericType(g)
+        type = infer(type, env, new_typeenv)
+        type.set_alias(str(name), generics)
+        typeenv[str(name)] = type
         return type
     if tree.data == "record_type":
         name, *fields = tree.children
         fields: Any = {
-            str(field.children[0]): infer(field.children[1], env) 
+            str(field.children[0]): infer(field.children[1], env, typeenv) 
             for field in fields
         }
         type = TableType("table", Type("string"), Type("any"), fields)
-        type_alias_env[str(name)] = type
+        typeenv[str(name)] = type
         return type
     if tree.data == "union_type":
         left, right = tree.children
-        left = infer(left, env)
-        right = infer(right, env)
+        left = infer(left, env, typeenv)
+        right = infer(right, env, typeenv)
         return UnionType("union", left, right)
     if tree.data == "type_hint":
-        return infer(tree.children[0], env)
+        return infer(tree.children[0], env, typeenv)
+    if tree.data == "generic_type":
+        name, *args = tree.children
+        args = [infer(a, env, typeenv) for a in args]
+        type = typeenv[str(name)]
+        assert len(args) == len(type.generics)
+        subs = {}
+        for g, arg in zip(type.generics, args):
+            subs[g] = arg
+        type = apply(type, subs)
+        type.args = args
+        return type
     assert False, f"Not implemented: {tree.data}"
 
 with open("test.lua") as f:

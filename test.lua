@@ -1,9 +1,7 @@
 
--- @record Name
--- @field first: string
--- @field last: string
+-- @alias Optional<T> = T | nil
 
--- @type Name
-local str = {
-  first = "Ian",
-}
+-- @type Optional<number>
+local x = ""
+return x
+
