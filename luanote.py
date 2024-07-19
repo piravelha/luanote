@@ -21,6 +21,8 @@ class Type:
         self.alias = type.alias
         self.args = type.args
         return self
+    def copy(self):
+        return Type(self.name, self.generics)
     def alias_repr(self):
         if self.args:
             args = ", ".join([repr(a) for a in self.args])
@@ -44,6 +46,8 @@ class TableType(Type):
         self.key = key
         self.value = value
         self.fields = fields
+    def copy(self):
+        return TableType(self.name, self.key, self.value, self.fields)
     def __repr__(self):
         if self.alias and not EXPAND_ALIASES:
             return self.alias_repr()
@@ -58,6 +62,8 @@ class FunctionType(Type):
         super().__init__(name)
         self.params = params
         self.returns = returns
+    def copy(self):
+        return FunctionType(self.name, self.params, self.returns)
     def __repr__(self):
         if self.alias and not EXPAND_ALIASES:
             return self.alias_repr()
@@ -67,6 +73,8 @@ class UnionType(Type):
     def __init__(self, name: str, *values: Type):
         super().__init__(name)
         self.values = values
+    def copy(self):
+        return UnionType(self.name, *self.values)
     def __repr__(self):
         if self.alias and not EXPAND_ALIASES:
             return self.alias_repr()
@@ -79,6 +87,8 @@ class GenericType(Type):
         self.gname = gname
         self.iota = GenericType._iota
         GenericType._iota += 1
+    def copy(self):
+        return GenericType(self.gname)
     def __repr__(self):
         return f"{self.gname}"
 
@@ -296,8 +306,8 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
             raise ValueError(f"{op_loc} Invalid operation '{op}' between types '{left}' and '{right}'")
         assert False, f"Not implemented: {op}"
     if tree.data == "table":
-        fields = {}
-        index = 1
+        fields2 = {}
+        cur_index = 1
         field_list = tree.children[0]
         new_array = []
         is_array = True
@@ -305,9 +315,10 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
         different_values = False
         key_type = None
         value_type = None
-        key = None
-        value = None
-        for field in field_list.children:
+        last_key = None
+        last_value = None
+        def run(field):
+            nonlocal cur_index, is_array, new_array, different_keys, different_values, key_type, value_type, last_key, last_value, fields2
             if isinstance(field, Tree) and len(field.children) == 2:
                 is_array = False
                 key, value = field.children
@@ -324,17 +335,19 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
                     value_type = value
                 if not extends(value, value_type) and not extends(value_type, value):
                     different_values = True
-                fields[str(key)] = lambda: value
-                continue
+                fields2[str(key)] = lambda: value
+                return None
             field = infer(field, env, typeenv)
-            fields[index] = field
+            fields2[cur_index] = field
             new_array.append(field)
-            index = index + 1
+            cur_index = cur_index + 1
+        for field in field_list.children:
+            run(field)
         if is_array:
             if different_keys:
-                raise ValueError(f"{loc(tree)} Table contains keys of different types: '{key_type}' and '{key}'")
+                raise ValueError(f"{loc(tree)} Table contains keys of different types: '{key_type}' and '{last_key}'")
             if different_values:
-                raise ValueError(f"{loc(tree)} Table contains values of different types: '{value_type}' and '{value}'")
+                raise ValueError(f"{loc(tree)} Table contains values of different types: '{value_type}' and '{last_value}'")
             if not new_array:
                 return TableType("table", Type("never"), Type("never"))
             first = new_array[0]
@@ -343,7 +356,7 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
                     raise ValueError(f"{loc(tree)} Array contains elements of different types: '{first}' and '{field}'")
             return TableType("table", Type("integer"), first)
         assert key_type is not None and value_type is not None
-        return TableType("table", key_type, value_type,  fields)
+        return TableType("table", key_type, value_type,  fields2)
     if tree.data == "index_expr":
         table, index = tree.children
         index_loc = loc(index)
@@ -479,7 +492,7 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
         fields = {}
         for field in tree.children:
             name, type = field.children
-            cur = type
+            cur = type.copy()
             fields[str(name)] = lambda: infer(cur, env, typeenv)
         return TableType("table", Type("string"), Type("any"), fields)
     if tree.data == "alias_type":
@@ -494,11 +507,12 @@ def infer(tree: Tree | Token, env: dict[str, Type] = _LUAENV, typeenv: dict[str,
         return type
     if tree.data == "record_type":
         name, *fields = tree.children
-        fields: Any = {
-            str(field.children[0]): lambda: infer(field.children[1], env, typeenv) 
-            for field in fields
-        }
-        type = TableType("table", Type("string"), Type("any"), fields)
+        new_fields = {}
+        def run(field):
+            key, val = field.children
+            new_fields[str(key)] = lambda: infer(val, env, typeenv)
+        map(run, fields)
+        type = TableType("table", Type("string"), Type("any"), new_fields)
         typeenv[str(name)] = type
         return type
     if tree.data == "union_type":

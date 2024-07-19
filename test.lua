@@ -1,7 +1,12 @@
 
-local x = {
+local obj = {
   deep = {
-    value = 5,
-  }
+    deeper = {
+      x = 5,
+      s = "hello",
+    },
+  },
 }
-x.deep.value = "" -- type mismatch now flagged by the typechecker
+
+obj.deep.deeper.x = "invalid"
+obj.deep.deeper.s = "world"
