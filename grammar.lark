@@ -9,13 +9,18 @@
      | obj_type
      | union_type
      | generic_type
+     | meta_type
+     | func_type
 
 type_hint: "--" "@type" type
 
 array_type: type "[" "]"
 dict_type: "{" "[" type "]" ":" type "}"
-obj_type: "{" obj_type_field ("," obj_type_field)* ","? "}"
+obj_type: "{" (obj_type_field ("," obj_type_field)* ","?)? "}"
 obj_type_field: NAME ":" type
+
+meta_type: type "@meta" type
+func_type: "(" (type ("," type)*)? ")" "->" type
 
 generic_type: NAME "<" type ("," type)* ">"
 
@@ -30,8 +35,8 @@ field_list_type: "--" "@field" NAME ":" type
 generic_type_hint: "--" "@generic" generic_param ("," generic_param)*
 generic_param: NAME (":" type)?
 return_type_hint: "--" "@return" type
-param_types: generic_type_hint? "--" "@params" (param_type ("," param_type)*)? ","? return_type_hint?
-param_type: NAME ":" type
+param_types: generic_type_hint? param_type* return_type_hint?
+param_type: "--" "@param" NAME type
 
 union_type: type "|" type
 
@@ -70,7 +75,7 @@ else_branch: "else" block
 range_for_stmt: "for" NAME "=" expr "," expr ("," expr)? "do" block "end"
 generic_for_stmt: "for" name_list "in" expr_list "do" block "end"
 
-func_decl: param_types "function" func_name func_body
+func_decl: "function" func_name func_body
 
 var_decl: type_hint? "local" var_list "=" expr_list
 
@@ -79,7 +84,7 @@ var_decl: type_hint? "local" var_list "=" expr_list
 
 break_stmt: "break"
 
-return_stmt: "return" expr_list?
+return_stmt: "return" expr?
 
 func_name: NAME ("." NAME)* (":" NAME)?
 
@@ -114,16 +119,17 @@ func_call: prefix_expr args
 
 func_expr: "function" func_body
 
-func_body: "(" param_list? ")" block "end"
+func_body: "(" param_list ")" param_types block "end"
 
 param_list: name_list ("," ELLIPSIS)?
           | ELLIPSIS
+          | empty
 
 name_list: NAME ("," NAME)*
 
-table: "{" field_list? "}"
+table: "{" field_list "}"
 
-field_list: field (("," | ";") field)* ("," | ";")?
+field_list: (field (("," | ";") field)* ("," | ";")?)?
 
 ?field: dict_field
       | obj_field
@@ -131,7 +137,8 @@ field_list: field (("," | ";") field)* ("," | ";")?
 dict_field: "[" expr "]" "=" expr
 obj_field: NAME "=" expr
 
-?log_expr: rel_expr LOG_OP log_expr | rel_expr
+?log_expr: eq_expr LOG_OP log_expr | eq_expr
+?eq_expr: rel_expr EQ_OP eq_expr | rel_expr
 ?rel_expr: add_expr REL_OP rel_expr | add_expr
 ?add_expr: mul_expr ADD_OP add_expr | mul_expr
 ?mul_expr: exp_expr MUL_OP mul_expr | exp_expr
@@ -148,7 +155,7 @@ obj_field: NAME "=" expr
      | prefix_expr
 
 TYPE_NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
-PRIMITIVE_TYPE: /integer|BOOLEANean|number|string|nil/
+PRIMITIVE_TYPE: /integer|boolean|number|string|nil/
 
 ELLIPSIS: /\.\.\./
 
@@ -168,4 +175,4 @@ NUMBER: /(\d+)?(\.\d+)/
 INTEGER: /\d+/
 
 %ignore /\s+/
-%ignore /--(?!\s*(@(params|alias|record|field|type|return))).*/
+%ignore /--(?!\s*(@(param|alias|record|field|type|return))).*/

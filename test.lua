@@ -1,10 +1,8 @@
 
--- @generic T : string | number
--- @params x : T
-function f(x)
-    return x
+function add(x, y)
+    -- @param x boolean
+    -- @param y boolean
+    return x and y
 end
 
-local x = f(1)
-local y = f("hello")
-local z = f(true) -- Expect error
+return add(true, false)
