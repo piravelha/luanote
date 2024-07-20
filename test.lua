@@ -1,8 +1,15 @@
 
-function add(x, y)
-    --# @param x: boolean
-    --# @param y: boolean
-    return x and y
+function add(x)
+    --@param x: boolean
+    return x and 1
 end
 
-return add(true, false)
+--@type boolean | nil | string
+local booly = true
+
+--@type boolean
+local bool = true
+
+if type(booly) == "boolean" then
+    return add(booly)
+end

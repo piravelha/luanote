@@ -77,7 +77,7 @@ generic_for_stmt: "for" name_list "in" expr_list "do" block "end"
 
 func_decl: "function" func_name func_body
 
-var_decl: type_hint? "local" var_list "=" expr_list
+var_decl: type_hint? "local" var "=" expr
 
 ?last_stmt: return_stmt
           | break_stmt
