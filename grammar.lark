@@ -36,7 +36,7 @@ generic_type_hint: "--" "@generic" generic_param ("," generic_param)*
 generic_param: NAME (":" type)?
 return_type_hint: "--" "@return" type
 param_types: generic_type_hint? param_type* return_type_hint?
-param_type: "--" "@param" NAME type
+param_type: "--" "@param" NAME ":" type
 
 union_type: type "|" type
 

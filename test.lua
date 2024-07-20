@@ -1,7 +1,7 @@
 
 function add(x, y)
-    -- @param x boolean
-    -- @param y boolean
+    --# @param x: boolean
+    --# @param y: boolean
     return x and y
 end
 
