@@ -19,8 +19,10 @@ dict_type: "{" "[" type "]" ":" type "}"
 obj_type: "{" (obj_type_field ("," obj_type_field)* ","?)? "}"
 obj_type_field: NAME ":" type
 
-meta_type: type "@meta" type
-func_type: "(" (type ("," type)*)? ")" "->" type
+meta_type.2: "meta" "<" type "," type ">"
+
+func_type: generic_param_list "(" type_param_list ")" "->" type
+type_param_list: (type ("," type)*)?
 
 generic_type: NAME "<" type ("," type)* ">"
 
@@ -106,9 +108,11 @@ index_expr: prefix_expr "[" expr "]"
 prop_expr: prefix_expr "." NAME
 
 ?prefix_expr: var
-            | func_call
             | method_call
-            | "(" expr ")"
+            | paren
+            | func_call
+
+?paren.-1: "(" expr ")"
 
 method_call: prefix_expr ":" NAME args
 func_call: prefix_expr args
