@@ -1,15 +1,11 @@
 
-function add(x)
-    --@param x: boolean
-    return x and 1
+function id(x)
+    --@generic T
+    --@param x: T
+    if x then return x end
+    return nil
 end
 
---@type boolean | nil | string
-local booly = true
+local x = id(10)
 
---@type boolean
-local bool = true
-
-if type(booly) == "boolean" then
-    return add(booly)
-end
+return x

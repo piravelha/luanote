@@ -1,4 +1,3 @@
-from ctypes import Union
 from typing import Callable, Optional
 from lark import Lark, Token, Tree
 
@@ -54,13 +53,14 @@ class ObjType:
 class UnionType:
     def __init__(self, values: list[Type]):
         self.values = values
-    def simplify(self) -> 'UnionType':
+    def simplify(self, **kwargs) -> 'UnionType':
         new_values = []
         for value in self.values:
             for new_value in new_values:
-                if extends(value, new_value):
+                if not kwargs: continue
+                if extends(value, new_value, **kwargs):
                     break
-                if extends(new_value, value):
+                if extends(new_value, value, **kwargs):
                     new_values.remove(new_value)
             else:
                 new_values.append(value)
@@ -71,29 +71,87 @@ class UnionType:
         return " | ".join(map(str, self.simplify().values))
 
 class FuncType:
-    def __init__(self, params: list[Type], ret: Type):
+    def __init__(self, params: list[Type], ret: Type, generics: list[str] = []):
         self.params = params
         self.ret = ret
+        self.generics = generics
     def __repr__(self):
         return f"({', '.join(map(str, self.params))}) -> {self.ret}"
 
-def simplify(type: Type) -> Type:
+class GenericVar:
+    def __init__(self, name: str):
+        self.name = name
+    def __repr__(self):
+        return self.name
+
+def simplify(type: Type, **kwargs) -> Type:
     if isinstance(type, UnionType):
-        return type.simplify()
+        return type.simplify(**kwargs)
     return type
+
+def apply(type: Type, subs: dict[str, Type], **kwargs) -> Type:
+    if isinstance(type, GenericVar) and type.name in subs:
+        return subs[type.name]
+    if isinstance(type, PrimitiveType):
+        return type
+    if isinstance(type, DictType):
+        return DictType(apply(type.key, subs), apply(type.value, subs))
+    if isinstance(type, ObjType):
+        return ObjType({k: apply(v, subs) for k, v in type.fields.items()})
+    if isinstance(type, UnionType):
+        return UnionType([apply(v, subs) for v in type.values])
+    if isinstance(type, FuncType):
+        return FuncType([apply(p, subs) for p in type.params], apply(type.ret, subs))
+    return type
+
+def unify(type_a: Type, type_b: Type, **kwargs) -> dict[str, Type]:
+    if isinstance(type_a, GenericVar):
+        return {type_a.name: type_b}
+    if isinstance(type_b, GenericVar):
+        return {type_b.name: type_a}
+    if isinstance(type_a, PrimitiveType) and isinstance(type_b, PrimitiveType):
+        return {}
+    if isinstance(type_a, UnionType):
+        subs = {}
+        for v in type_a.values:
+            subs.update(unify(v, type_b, **kwargs))
+        return subs
+    if isinstance(type_b, UnionType):
+        subs = {}
+        for v in type_b.values:
+            subs.update(unify(type_a, v, **kwargs))
+        return subs
+    if isinstance(type_a, DictType) and isinstance(type_b, DictType):
+        subs = {}
+        subs.update(unify(type_a.key, type_b.key, **kwargs))
+        subs.update(unify(type_a.value, type_b.value, **kwargs))
+        return subs
+    if isinstance(type_a, ObjType) and isinstance(type_b, ObjType):
+        subs = {}
+        for k, v in type_a.fields.items():
+            if k in type_b.fields:
+                subs.update(unify(v, type_b.fields[k], **kwargs))
+        return subs
+    if isinstance(type_a, FuncType) and isinstance(type_b, FuncType):
+        subs = {}
+        for a, b in zip(type_a.params, type_b.params):
+            subs.update(unify(b, a, **kwargs))
+        subs.update(unify(type_a.ret, type_b.ret, **kwargs))
+        return subs
+    return {}
 
 def intersect(type_a: Type, type_b: Type, **kwargs) -> Type:
     if isinstance(type_a, PrimitiveType) and type_a.name == "never":
         return PrimitiveType("never")
     if isinstance(type_a, PrimitiveType) and type_a.name == "unknown":
-        return simplify(type_b)
+        return simplify(type_b, **kwargs)
     if isinstance(type_b, PrimitiveType) and type_b.name == "never":
         return PrimitiveType("never")
     if isinstance(type_b, PrimitiveType) and type_b.name == "unknown":
-        return simplify(type_a)
+        return simplify(type_a, **kwargs)
     if isinstance(type_a, PrimitiveType) and isinstance(type_b, PrimitiveType):
         if type_a.name == type_b.name:
-            return simplify(type_a)
+            return simplify(type_a, **kwargs)
         return PrimitiveType("never")
     if isinstance(type_a, UnionType):
         return UnionType([intersect(v, type_b, **kwargs) for v in type_a.values]).simplify()
@@ -120,6 +178,12 @@ def intersect(type_a: Type, type_b: Type, **kwargs) -> Type:
     return PrimitiveType("never")
 
 def extends(type_a: Type, type_b: Type, **kwargs) -> bool:
+    if isinstance(type_a, PlaceHolderType) and isinstance(type_b, PlaceHolderType):
+        return type_a.name == type_b.name
+    type_a = eval_type(kwargs["type_env"], type_a)
+    type_b = eval_type(kwargs["type_env"], type_b)
+    if kwargs.get("allow_generics") and isinstance(type_b, GenericVar):
+        return True
     if isinstance(type_a, PrimitiveType) and type_a.name == "never":
         return True
     if isinstance(type_b, PrimitiveType) and type_b.name == "unknown":
@@ -168,10 +232,13 @@ def typecheck_name(value, **kwargs):
         return env[value], False
     raise TypeError(f"{get_loc(value)} Accessing unbound variable '{value}'")
 
+def typecheck_identifier(value, **kwargs):
+    return PrimitiveType("string"), False
+
 def typecheck_type_name(value, **kwargs):
     type_env = kwargs["type_env"]
     if value in type_env:
-        return type_env[value]
+        return type_env[value], False
     return PlaceHolderType(value), False
 
 def typecheck_unary_expr(op: Token, value: Node, **kwargs):
@@ -198,21 +265,23 @@ def typecheck_unary_expr(op: Token, value: Node, **kwargs):
 def typecheck_binary_expr(left: Node, op: Token, right: Node, **kwargs):
     left_type, _ = typecheck(left, **kwargs)
     right_type, _ = typecheck(right, **kwargs)
-    assert isinstance(left_type, PrimitiveType) # TODO: add support for other types
-    assert isinstance(right_type, PrimitiveType) # TODO: add support for other types
     match str(op):
         case x if x in "+-*/^%":
+            assert isinstance(left_type, PrimitiveType)
+            assert isinstance(right_type, PrimitiveType)
             if left_type.name == "integer" and right_type.name == "integer":
                 return PrimitiveType("integer"), False
             if left_type.name == "number" and right_type.name == "number":
                 return PrimitiveType("number"), False
             raise TypeError(f"{get_loc(op)} Attempt to perform arithmetic ({op}) on non-numeric values: '{left_type}' and '{right_type}'")
         case "..":
+            assert isinstance(left_type, PrimitiveType)
+            assert isinstance(right_type, PrimitiveType)
             if left_type.name == "string" and right_type.name == "string":
                 return PrimitiveType("string"), False
             raise TypeError(f"{get_loc(op)} Attempt to concatenate non-string values: '{left_type}' and '{right_type}'")
         case x if x in ["==", "~=", "<", "<=", ">", ">="]:
-            if left_type.name == right_type.name:
+            if extends(left_type, right_type, **kwargs):
                 return PrimitiveType("boolean"), False
             raise TypeError(f"{get_loc(op)} Attempt to compare values of different types: '{left_type}' and '{right_type}'")
         case x if x in ["and", "or"]:
@@ -234,7 +303,7 @@ def typecheck_obj(fields: Tree, **kwargs):
     obj_fields = {}
     for field in fields.children:
         key, value = field.children
-        value_type = typecheck(value, **kwargs)
+        value_type, _ = typecheck(value, **kwargs)
         obj_fields[str(key)] = value_type
     return ObjType(obj_fields), False
 
@@ -267,12 +336,27 @@ def typecheck_table(fields: Tree, **kwargs):
     if is_obj: return typecheck_obj(fields, **kwargs)
     return typecheck_dict(fields, **kwargs)
 
-def typecheck_type_alias(name, generics, type_expr, **kwargs):
+def typecheck_prop_expr(obj, prop, **kwargs):
+    obj_type, _ = typecheck(obj, **kwargs)
+    obj_type = eval_type(kwargs["type_env"], obj_type)
+    if not isinstance(obj_type, ObjType):
+        raise TypeError(f"{get_loc(obj)} Attempt to access a property of a non-object value")
+    if str(prop) not in obj_type.fields:
+        raise TypeError(f"{get_loc(prop)} Attempt to access a non-existent property '{prop}'")
+    return obj_type.fields[str(prop)], False
+
+def typecheck_alias_type(name, generics, type_expr, **kwargs):
     type_env = kwargs["type_env"]
     if name in type_env:
         raise TypeError(f"{get_loc(name)} Attempt to redefine type '{name}'")
     type_env[str(name)], _ = typecheck(type_expr, **kwargs)
     return type_env[str(name)], False
+
+def typecheck_func_type(*args, **kwargs):
+    *params, ret = args
+    params = [typecheck(param, **kwargs)[0] for param in params]
+    ret = typecheck(ret, **kwargs)[0]
+    return FuncType(params, ret), False
 
 def typecheck_type_hint(type_expr, **kwargs):
     return typecheck(type_expr, **kwargs)
@@ -287,7 +371,7 @@ def typecheck_obj_type(*fields, **kwargs):
     obj_fields = {}
     for field in fields:
         key, value = field.children
-        value_type = typecheck(value, **kwargs)
+        value_type, _ = typecheck(value, **kwargs)
         obj_fields[str(key)] = value_type
     return ObjType(obj_fields), False
 
@@ -307,11 +391,19 @@ def typecheck_func_call(name, args, **kwargs):
     if len(args) != len(name.params):
         raise TypeError(f"{name_loc} Attempting to call a function that requires {len(name.params)} parameters with {len(args)} arguments")
     i = 0
+    subs = {}
+    kwargs["allow_generics"] = True
     for arg, param in zip(args, name.params):
         if not extends(arg, param, **kwargs):
             raise TypeError(f"{arg_locs[i]} Invalid argument type, expected '{param}', got '{arg}'")
+        subs.update(unify(arg, param, **kwargs))
         i += 1
-    return name.ret, False
+    return apply(name.ret, subs, **kwargs), False
+
+def typecheck_method_call(obj, name, args, **kwargs):
+    func = Tree("prop_expr", [obj, name])
+    new_args = Tree("args", [obj] + args.children)
+    return typecheck_func_call(func, new_args, **kwargs)
 
 def typecheck_var_decl(*args, **kwargs):
     if len(args) == 3:
@@ -333,14 +425,25 @@ def typecheck_var_decl(*args, **kwargs):
 def typecheck_func_body(params, types, body, **kwargs):
     params = params.children[0]
     new_params = []
-    for param, type in zip(params.children, types.children):
+    generics: list[str] = []
+    i = 0
+    for type in types.children:
+        if type.data == "generic_type_hint":
+            generics = list(map(lambda x: str(x.children[0]), type.children))
+            kwargs["type_env"].update({g: GenericVar(g) for g in generics})
+            continue
+        param = params.children[i]
         pname, ptype = type.children
         assert param.type == "NAME" and param.value == pname.value
         p, _ = typecheck(ptype, **kwargs)
         new_params.append(p)
         kwargs["env"][str(param)] = p
+        i += 1
     body_type, body_ret = typecheck(body, **kwargs)
-    return FuncType(new_params, body_type), body_ret
+    return FuncType(new_params, body_type, generics), body_ret
+
+def typecheck_func_expr(body, **kwargs):
+    return typecheck(body, **kwargs)
 
 def typecheck_func_decl(name, body, **kwargs):
     assert name.data == "func_name"
@@ -350,8 +453,9 @@ def typecheck_func_decl(name, body, **kwargs):
     return PrimitiveType("nil"), False
 
 def _update_type_by_check(condition, **kwargs):
-    if condition.data == "eq_expr":
+    if isinstance(condition, Tree) and condition.data == "eq_expr":
         left, op, right = condition.children
+        assert isinstance(op, Token)
         if op.value == "==":
             if isinstance(left, Token) and kwargs["env"].get(left.value) is not None:
                 kwargs["env"][left.value], _ = typecheck(right, env=kwargs["env"])
@@ -403,20 +507,23 @@ def typecheck_if_stmt(cond, body, **kwargs):
     kwargs["env"] = kwargs["env"].copy()
     _update_type_by_check(cond, **kwargs)
     cond_type, _ = typecheck(cond, **kwargs)
-    if not extends(cond_type, PrimitiveType("boolean")):
-        raise TypeError(f"{get_loc(cond)} Invalid condition type, expected 'boolean', got '{cond_type}'")
     return typecheck(body, **kwargs)
 
 def typecheck_chunk(*stmts, **kwargs):
     new_env = kwargs["env"].copy()
-    last = PrimitiveType("nil")
+    last = None
     rets = False
     kwargs["env"] = new_env
     for stmt in stmts:
         type, ret = typecheck(stmt, **kwargs)
         if ret:
-            last = type
+            if last is None:
+                last = type
+            else:
+                last = UnionType([last, type])
             rets = True
+    if last is None:
+        return PrimitiveType("nil"), rets
     return last, rets
 
 DATA_TO_TYPECHECKER: dict[str, Callable[..., tuple[Type, bool]]] = {
@@ -426,6 +533,7 @@ DATA_TO_TYPECHECKER: dict[str, Callable[..., tuple[Type, bool]]] = {
     "BOOLEAN": typecheck_boolean,
     "NIL": typecheck_nil,
     "NAME": typecheck_name,
+    "IDENTIFIER": typecheck_identifier,
     "TYPE_NAME": typecheck_type_name,
     "unary_expr": typecheck_unary_expr,
     "exp_expr": typecheck_binary_expr,
@@ -435,24 +543,30 @@ DATA_TO_TYPECHECKER: dict[str, Callable[..., tuple[Type, bool]]] = {
     "eq_expr": typecheck_binary_expr,
     "log_expr": typecheck_binary_expr,
     "table": typecheck_table,
-    "type_alias": typecheck_type_alias,
+    "prop_expr": typecheck_prop_expr,
+    "alias_type": typecheck_alias_type,
+    "func_type": typecheck_func_type,
     "type_hint": typecheck_type_hint,
     "union_type": typecheck_union_type,
     "PRIMITIVE_TYPE": typecheck_primitive_type,
     "obj_type": typecheck_obj_type,
     "return_stmt": typecheck_return_stmt,
     "func_call": typecheck_func_call,
+    "method_call": typecheck_method_call,
     "var_decl": typecheck_var_decl,
     "if_stmt": typecheck_if_stmt,
     "func_body": typecheck_func_body,
+    "func_expr": typecheck_func_expr,
     "func_decl": typecheck_func_decl,
     "chunk": typecheck_chunk,
 }
 
 def typecheck(tree: Node, **kwargs):
     if isinstance(tree, Token):
-        return DATA_TO_TYPECHECKER[tree.type](tree, **kwargs)
-    return DATA_TO_TYPECHECKER[tree.data](*tree.children, **kwargs)
+        type, ret = DATA_TO_TYPECHECKER[tree.type](tree, **kwargs)
+        return simplify(type, **kwargs), ret
+    type, ret = DATA_TO_TYPECHECKER[tree.data](*tree.children, **kwargs)
+    return simplify(type, **kwargs), ret
 
 _LUAENV = {
     "print": FuncType([PrimitiveType("unknown")], PrimitiveType("nil")),
